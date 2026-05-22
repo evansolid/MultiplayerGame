@@ -1,14 +1,59 @@
 body {
-  margin: 0;
-  background: black;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  height: 100vh;
-  overflow: hidden;
+margin: 0;
+font-family: Arial, sans-serif;
+background: #111;
+color: white;
 }
-
-canvas {
-  background: #111;
-  border: 2px solid white;
+.container {
+max-width: 700px;
+margin: auto;
+padding: 20px;
+}
+h1, h2 {
+text-align: center;
+9
+}
+input {
+width: 100%;
+padding: 14px;
+margin-bottom: 10px;
+border-radius: 10px;
+border: none;
+font-size: 1rem;
+box-sizing: border-box;
+}
+button {
+width: 100%;
+padding: 16px;
+margin-bottom: 10px;
+border: none;
+border-radius: 10px;
+background: #ff4444;
+color: white;
+font-size: 1rem;
+cursor: pointer;
+}
+button:hover {
+opacity: 0.9;
+}
+.hidden {
+display: none;
+}
+.player {
+background: #222;
+padding: 15px;
+margin-bottom: 10px;
+border-radius: 10px;
+}
+.dead {
+opacity: 0.5;
+}
+.bomb {
+color: gold;
+}
+#phaseText {
+10
+text-align: center;
+margin-bottom: 20px;
+font-size: 1.2rem;
 }
