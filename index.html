@@ -75,6 +75,25 @@
     border: 1px solid #333;
     padding: 2px;
   }
+  .row select {
+    width: 86px;
+    flex-shrink: 0;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    color: #eee;
+    padding: 4px 2px;
+    font-family: monospace;
+    font-size: 12px;
+  }
+  .row input[type=number]:disabled {
+    opacity: 0.35;
+  }
+  .evoNote {
+    color: #777;
+    font-size: 11px;
+    line-height: 1.4;
+    margin: -2px 0 10px 0;
+  }
   button {
     background: #1a1a1a;
     border: 1px solid #444;
@@ -142,6 +161,44 @@
     <div class="row"><label>Tint</label><input id="tintInput" type="color" value="#e6b366"></div>
     <button id="applyFractalBtn" class="fullBtn">Apply Fractal</button>
     <button id="randomizeBtn" class="fullBtn">Randomize Fractal</button>
+
+    <h2>Evolution (Next Fractal)</h2>
+    <div class="row">
+      <label>Power</label>
+      <select id="evoPowerMode"><option value="random">Random</option><option value="increment">Increment</option></select>
+      <input id="evoPowerStep" type="number" step="0.05" value="0.15">
+    </div>
+    <div class="row">
+      <label>Scale</label>
+      <select id="evoScaleMode"><option value="random">Random</option><option value="increment">Increment</option></select>
+      <input id="evoScaleStep" type="number" step="0.005" value="0.01">
+    </div>
+    <div class="row">
+      <label>Roughness</label>
+      <select id="evoRoughMode"><option value="random">Random</option><option value="increment">Increment</option></select>
+      <input id="evoRoughStep" type="number" step="0.005" value="0.01">
+    </div>
+    <div class="row">
+      <label>Rot X (deg)</label>
+      <select id="evoRotXMode"><option value="random">Random</option><option value="increment">Increment</option></select>
+      <input id="evoRotXStep" type="number" step="1" value="5">
+    </div>
+    <div class="row">
+      <label>Rot Y (deg)</label>
+      <select id="evoRotYMode"><option value="random">Random</option><option value="increment">Increment</option></select>
+      <input id="evoRotYStep" type="number" step="1" value="5">
+    </div>
+    <div class="row">
+      <label>Rot Z (deg)</label>
+      <select id="evoRotZMode"><option value="random">Random</option><option value="increment">Increment</option></select>
+      <input id="evoRotZStep" type="number" step="1" value="5">
+    </div>
+    <div class="row">
+      <label>Tint Hue</label>
+      <select id="evoHueMode"><option value="random">Random</option><option value="increment">Increment</option></select>
+      <input id="evoHueStep" type="number" step="1" value="8">
+    </div>
+    <div class="evoNote">"Increment" nudges a value by its step (negative = other direction) each time a new fractal starts, instead of randomizing it. Rotation and hue wrap at 360°; power/scale/roughness clamp at their slider limits. Applies after Save auto-continues and to the Randomize button.</div>
   </div>
 </div>
 
@@ -188,6 +245,40 @@
   const applyFractalBtn = document.getElementById('applyFractalBtn');
   const randomizeBtn = document.getElementById('randomizeBtn');
 
+  const evoPowerMode = document.getElementById('evoPowerMode');
+  const evoPowerStep = document.getElementById('evoPowerStep');
+  const evoScaleMode = document.getElementById('evoScaleMode');
+  const evoScaleStep = document.getElementById('evoScaleStep');
+  const evoRoughMode = document.getElementById('evoRoughMode');
+  const evoRoughStep = document.getElementById('evoRoughStep');
+  const evoRotXMode = document.getElementById('evoRotXMode');
+  const evoRotXStep = document.getElementById('evoRotXStep');
+  const evoRotYMode = document.getElementById('evoRotYMode');
+  const evoRotYStep = document.getElementById('evoRotYStep');
+  const evoRotZMode = document.getElementById('evoRotZMode');
+  const evoRotZStep = document.getElementById('evoRotZStep');
+  const evoHueMode = document.getElementById('evoHueMode');
+  const evoHueStep = document.getElementById('evoHueStep');
+
+  function getEvolveCfg(modeSel, stepInput){
+    return { mode: modeSel.value, step: parseFloat(stepInput.value) || 0 };
+  }
+
+  function wireEvoToggle(modeSel, stepInput){
+    function sync(){ stepInput.disabled = (modeSel.value !== 'increment'); }
+    modeSel.addEventListener('change', sync);
+    sync();
+  }
+  [
+    [evoPowerMode, evoPowerStep],
+    [evoScaleMode, evoScaleStep],
+    [evoRoughMode, evoRoughStep],
+    [evoRotXMode, evoRotXStep],
+    [evoRotYMode, evoRotYStep],
+    [evoRotZMode, evoRotZStep],
+    [evoHueMode, evoHueStep]
+  ].forEach(pair => wireEvoToggle(pair[0], pair[1]));
+
   let W = 1024, H = 1024;
   let MAX_LEVEL = 8;
   let level = 1, cellIndex = 0;
@@ -197,6 +288,17 @@
   let saveEnabled = false;
   let lastStatus = 'Paused — press Start to render.';
   let previewTargetLevel = null;
+
+  // Progress / timing tracking (reset per initCanvas call)
+  let cellsProcessedThisRun = 0;
+  let renderActiveMs = 0;
+  let totalWorkUnits = 0;
+
+  // Persistent HSL state for the tint, so hue-increment mode has continuity
+  // even across manual color-picker edits.
+  let stateHue = Math.random();
+  let stateSat = 0.3 + Math.random()*0.35;
+  let stateLight = 0.55 + Math.random()*0.2;
 
   // ---------------------------------------------------------------
   // Vector / matrix helpers
@@ -276,6 +378,43 @@
     const g = parseInt(h.substring(2,4),16)/255;
     const b = parseInt(h.substring(4,6),16)/255;
     return [r,g,b];
+  }
+
+  function rgbToHsl(rgb01){
+    const r = rgb01[0], g = rgb01[1], b = rgb01[2];
+    const max = Math.max(r,g,b), min = Math.min(r,g,b);
+    const l = (max+min)/2;
+    let h, s;
+    if (max === min){
+      h = 0; s = 0;
+    } else {
+      const d = max - min;
+      s = l > 0.5 ? d/(2-max-min) : d/(max+min);
+      switch(max){
+        case r: h = (g-b)/d + (g < b ? 6 : 0); break;
+        case g: h = (b-r)/d + 2; break;
+        default: h = (r-g)/d + 4; break;
+      }
+      h /= 6;
+    }
+    return [h, s, l];
+  }
+
+  function wrapDeg(d){
+    d = d % 360;
+    if (d < 0) d += 360;
+    return d;
+  }
+
+  // Either nudge `current` by cfg.step (increment mode) or draw a fresh
+  // value via randomFn (random mode). Angles wrap at 360°; other scalars
+  // clamp to [min, max].
+  function nextValue(cfg, current, randomFn, min, max, isAngle){
+    if (cfg.mode === 'increment'){
+      const v = current + cfg.step;
+      return isAngle ? wrapDeg(v) : clamp(v, min, max);
+    }
+    return randomFn();
   }
 
   // ---------------------------------------------------------------
@@ -471,16 +610,41 @@
   // Scene randomization / UI sync
   // ---------------------------------------------------------------
   function resetScene(){
-    FRACTAL.power = 4 + Math.random()*5.5;
-    const ax = Math.random()*Math.PI*2;
-    const ay = Math.random()*Math.PI*2;
-    const az = Math.random()*Math.PI*2;
+    const evoPower = getEvolveCfg(evoPowerMode, evoPowerStep);
+    const evoScale = getEvolveCfg(evoScaleMode, evoScaleStep);
+    const evoRough = getEvolveCfg(evoRoughMode, evoRoughStep);
+    const evoRotX  = getEvolveCfg(evoRotXMode,  evoRotXStep);
+    const evoRotY  = getEvolveCfg(evoRotYMode,  evoRotYStep);
+    const evoRotZ  = getEvolveCfg(evoRotZMode,  evoRotZStep);
+    const evoHue   = getEvolveCfg(evoHueMode,   evoHueStep);
+
+    FRACTAL.power = nextValue(evoPower, FRACTAL.power, () => 4 + Math.random()*5.5, 2, 14, false);
+
+    let degX = FRACTAL.angles[0]*180/Math.PI;
+    let degY = FRACTAL.angles[1]*180/Math.PI;
+    let degZ = FRACTAL.angles[2]*180/Math.PI;
+    degX = nextValue(evoRotX, degX, () => Math.random()*360, 0, 360, true);
+    degY = nextValue(evoRotY, degY, () => Math.random()*360, 0, 360, true);
+    degZ = nextValue(evoRotZ, degZ, () => Math.random()*360, 0, 360, true);
+    const ax = degX * Math.PI/180;
+    const ay = degY * Math.PI/180;
+    const az = degZ * Math.PI/180;
     FRACTAL.angles = [ax, ay, az];
     FRACTAL.invRot = transpose(buildRotation(ax, ay, az));
-    FRACTAL.scale = 0.30 + Math.random()*0.14;
-    FRACTAL.roughness = 0.02 + Math.random()*0.18;
-    const hue = Math.random();
-    FRACTAL.tint = hslToRgbUnit(hue, 0.3 + Math.random()*0.35, 0.55 + Math.random()*0.2);
+
+    FRACTAL.scale = nextValue(evoScale, FRACTAL.scale, () => 0.30 + Math.random()*0.14, 0.1, 0.6, false);
+    FRACTAL.roughness = nextValue(evoRough, FRACTAL.roughness, () => 0.02 + Math.random()*0.18, 0, 0.5, false);
+
+    if (evoHue.mode === 'increment'){
+      stateHue = wrapDeg(stateHue*360 + evoHue.step) / 360;
+      // stateSat / stateLight are left as-is for a smooth, hue-only shift
+    } else {
+      stateHue = Math.random();
+      stateSat = 0.3 + Math.random()*0.35;
+      stateLight = 0.55 + Math.random()*0.2;
+    }
+    FRACTAL.tint = hslToRgbUnit(stateHue, stateSat, stateLight);
+
     syncFractalInputsFromState();
   }
 
@@ -495,15 +659,17 @@
   }
 
   function applyFractalFromInputs(){
-    FRACTAL.power = clamp(parseFloat(powerInput.value) || 8, 2, 14);
-    FRACTAL.scale = clamp(parseFloat(scaleInput.value) || 0.38, 0.1, 0.6);
-    FRACTAL.roughness = clamp(parseFloat(roughInput.value) || 0.08, 0, 0.5);
+    FRACTAL.power = parseFloat(powerInput.value); // reccomended value between 2-8
+    FRACTAL.scale = parseFloat(scaleInput.value); // reccomended value between 0.3-0.6
+    FRACTAL.roughness = parseFloat(roughInput.value); // reccomended between 0.08-0.5
     const ax = (parseFloat(rotXInput.value) || 0) * Math.PI/180;
     const ay = (parseFloat(rotYInput.value) || 0) * Math.PI/180;
     const az = (parseFloat(rotZInput.value) || 0) * Math.PI/180;
     FRACTAL.angles = [ax, ay, az];
     FRACTAL.invRot = transpose(buildRotation(ax, ay, az));
     FRACTAL.tint = hexToRgb01(tintInput.value);
+    const hsl = rgbToHsl(FRACTAL.tint);
+    stateHue = hsl[0]; stateSat = hsl[1]; stateLight = hsl[2];
     powerInput.value = FRACTAL.power.toFixed(2);
     scaleInput.value = FRACTAL.scale.toFixed(3);
     roughInput.value = FRACTAL.roughness.toFixed(3);
@@ -518,11 +684,11 @@
   }
 
   function applyQualityFromInputs(){
-    MAX_DEPTH = clamp(parseInt(bouncesInput.value,10) || 3, 1, 8);
-    SPP = clamp(parseInt(sppInput.value,10) || 1, 1, 8);
-    MARCH_STEPS = clamp(parseInt(marchInput.value,10) || 64, 8, 200);
-    SHADOW_STEPS = clamp(parseInt(shadowInput.value,10) || 32, 8, 128);
-    FRACTAL_ITERS = clamp(parseInt(itersInput.value,10) || 6, 3, 12);
+    MAX_DEPTH     = parseInt(bouncesInput.value,10);  // reccomended value between 1-8
+    SPP           = parseInt(sppInput.value,10);      // reccomended value between 1-8
+    MARCH_STEPS   = parseInt(marchInput.value,10);    // reccomended value between 8-200
+    SHADOW_STEPS  = parseInt(shadowInput.value,10);   // reccomended value between 8-128
+    FRACTAL_ITERS = parseInt(itersInput.value,10);    // reccomended value between 3-12
     bouncesInput.value = MAX_DEPTH;
     sppInput.value = SPP;
     marchInput.value = MARCH_STEPS;
@@ -544,6 +710,17 @@
     level = 1;
     cellIndex = 0;
     finished = false;
+
+    // Reset progress/timing trackers for this render sequence and
+    // precompute the total number of renderPixel calls across all levels
+    // (1 call per quadtree cell per level, regardless of block size).
+    cellsProcessedThisRun = 0;
+    renderActiveMs = 0;
+    totalWorkUnits = 0;
+    for (let L = 1; L <= MAX_LEVEL; L++){
+      const dim = 1 << L;
+      totalWorkUnits += dim * dim;
+    }
   }
 
   function setPixelBlock(col, row, w, h, color){
@@ -562,6 +739,17 @@
   // ---------------------------------------------------------------
   // Info panel
   // ---------------------------------------------------------------
+  function formatDuration(ms){
+    if (!isFinite(ms) || ms < 0) return '—';
+    let totalSec = Math.round(ms/1000);
+    const h = Math.floor(totalSec/3600); totalSec -= h*3600;
+    const m = Math.floor(totalSec/60); totalSec -= m*60;
+    const s = totalSec;
+    if (h > 0) return h+'h '+m+'m '+s+'s';
+    if (m > 0) return m+'m '+s+'s';
+    return s+'s';
+  }
+
   function updateInfoPanel(msg){
     if (msg !== undefined) lastStatus = msg;
     const deg = FRACTAL.angles.map(a => (a*180/Math.PI).toFixed(1));
@@ -569,11 +757,40 @@
     const gridDim = 1 << Math.min(level, MAX_LEVEL);
     const totalCells = gridDim * gridDim;
     const stepShown = level > MAX_LEVEL ? totalCells : cellIndex;
+
+    const overallPercent = totalWorkUnits > 0 ? clamp(cellsProcessedThisRun/totalWorkUnits*100, 0, 100) : 0;
+    const timePerCellMs = cellsProcessedThisRun > 0 ? (renderActiveMs / cellsProcessedThisRun) : null;
+    const activelyRenderingFull = running && previewTargetLevel === null && !finished;
+
+    let timeLine;
+    if (finished){
+      timeLine = '<div><b>Last render took:</b> ' + formatDuration(renderActiveMs) + '</div>';
+    } else if (activelyRenderingFull){
+      if (timePerCellMs !== null){
+        const remainingCells = Math.max(0, totalWorkUnits - cellsProcessedThisRun);
+        const etaMs = remainingCells * timePerCellMs;
+        const finishClock = new Date(Date.now() + etaMs).toLocaleTimeString();
+        timeLine = '<div><b>Time remaining:</b> ~' + formatDuration(etaMs) + ' (finish ~' + finishClock + ')</div>';
+      } else {
+        timeLine = '<div><b>Time remaining:</b> calculating...</div>';
+      }
+    } else {
+      if (timePerCellMs !== null){
+        const fullEstMs = timePerCellMs * totalWorkUnits;
+        timeLine = '<div><b>Est. full render time (current settings):</b> ~' + formatDuration(fullEstMs) + '</div>';
+      } else {
+        timeLine = '<div><b>Est. full render time:</b> calculating...</div>';
+      }
+    }
+    const avgCellLine = '<div><b>Avg. time/cell:</b> ' + (timePerCellMs !== null ? timePerCellMs.toFixed(2) + ' ms' : 'n/a') + '</div>';
+
     infoEl.innerHTML =
       '<div><b>Status:</b> ' + lastStatus + '</div>' +
       '<div><b>Resolution:</b> ' + W + ' x ' + H + '</div>' +
       '<div><b>Level:</b> ' + Math.min(level, MAX_LEVEL) + ' / ' + MAX_LEVEL + '</div>' +
-      '<div><b>Step:</b> ' + stepShown + ' / ' + totalCells + '</div>' +
+      '<div><b>Step:</b> ' + stepShown + ' / ' + totalCells + '  (' + overallPercent.toFixed(1) + '% overall)</div>' +
+      timeLine +
+      avgCellLine +
       '<div><b>Save on completion:</b> ' + (saveEnabled ? 'On' : 'Off') + '</div>' +
       '<hr>' +
       '<div><b>Bounces:</b> ' + MAX_DEPTH + '  <b>Samples/px:</b> ' + SPP + '</div>' +
@@ -604,10 +821,12 @@
         cellIndex = 0;
         updateInfoPanel();
         if (level > MAX_LEVEL){
+          renderActiveMs += performance.now() - start;
           finishRender();
           return;
         }
         if (previewTargetLevel !== null && level > previewTargetLevel){
+          renderActiveMs += performance.now() - start;
           running = false;
           startBtn.textContent = 'Start';
           previewTargetLevel = null;
@@ -620,6 +839,7 @@
       const row = Math.floor(cellIndex / gridDim);
       const col = cellIndex % gridDim;
       cellIndex++;
+      cellsProcessedThisRun++;
 
       const x0 = Math.floor(col * W / gridDim);
       const x1 = Math.floor((col+1) * W / gridDim);
@@ -631,6 +851,7 @@
       setPixelBlock(x0, y0, x1-x0, y1-y0, color);
     }
 
+    renderActiveMs += performance.now() - start;
     ctx.putImageData(imgData, 0, 0);
     updateInfoPanel();
     if (running) requestAnimationFrame(processChunk);
@@ -682,6 +903,7 @@
       'resolution=' + W + 'x' + H
     ];
 
+    /*
     const fontSize = Math.max(11, Math.round(Math.min(W,H) * 0.022));
     tctx.font = fontSize + 'px monospace';
     const lineHeight = fontSize * 1.35;
@@ -694,6 +916,7 @@
     lines.forEach((line, i) => {
       tctx.fillText(line, padding, H - boxHeight + padding + lineHeight*(i+0.8));
     });
+    */
 
     const timestamp = Date.now();
     const baseName = 'fractal_' + timestamp;
@@ -722,7 +945,7 @@
       timestamp: timestamp
     };
     const jsonBlob = new Blob([JSON.stringify(paramObj, null, 2)], {type:'application/json'});
-    downloadBlob(jsonBlob, baseName + '.json');
+    //downloadBlob(jsonBlob, baseName + '.json');
   }
 
   function finishRender(){
@@ -767,8 +990,8 @@
   });
 
   function applyResolution(){
-    const w = clamp(parseInt(widthInput.value, 10) || 256, 16, 4096);
-    const h = clamp(parseInt(heightInput.value, 10) || 256, 16, 4096);
+    const w = parseInt(widthInput.value, 10); // reccomended value between 16-4096
+    const h = parseInt(heightInput.value, 10); // reccomended value between 16-4096
     widthInput.value = w;
     heightInput.value = h;
     setRunning(false);
